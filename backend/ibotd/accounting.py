@@ -1,11 +1,20 @@
+"""Счёт одной комбинации: сделки, просадка, помесячная прибыль.
+
+Плагин приходит снаружи. Здесь нет ветки по имени стратегии.
+"""
+
 import math
 from datetime import datetime, timezone
 
-from ibot.grid import series_key
+from ibotd.lot import floor_to_step
 
 
 def month_keys_of(open_time):
     return _month_span(open_time)
+
+
+def series_key(keys, params):
+    return '|'.join(str(params.get(key)) for key in keys)
 
 
 def simulate(plugin, series, params, settings, cache=None):
@@ -171,7 +180,7 @@ def simulate(plugin, series, params, settings, cache=None):
 def _open_position(side, price, stop, take, protect_from, settings):
     if not price > 0 or not settings['orderNotional'] > 0:
         return None
-    qty = _round_lot(settings['orderNotional'] / price, settings.get('lotStep'))
+    qty = floor_to_step(settings['orderNotional'] / price, settings.get('lotStep'))
     if not qty > 0:
         return None
     if settings.get('minQty') is not None and qty < settings['minQty']:
@@ -196,15 +205,6 @@ def _mark_adverse(position, index, low, high, close, realized, deposit):
         worst = (position['entry'] - high) * position['qty']
         mark = (position['entry'] - close) * position['qty']
     return {'equityMark': deposit + realized + mark, 'equityWorst': deposit + realized + worst, 'worstUnrealized': worst}
-
-
-def _round_lot(qty, step):
-    if step is None or not step > 0:
-        return qty
-    text = f'{step:.12f}'.rstrip('0').rstrip('.')
-    decimals = 0 if '.' not in text else len(text.split('.')[1])
-    units = math.floor(qty / step + 1e-9)
-    return round(units * step, decimals)
 
 
 def _day(ms):

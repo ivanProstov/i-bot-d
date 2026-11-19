@@ -3,17 +3,7 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-PARAM_COLUMNS = [
-    ('fastType', 'fastType'), ('fastPeriod', 'fastPeriod'), ('slowType', 'slowType'), ('slowPeriod', 'slowPeriod'),
-    ('offsetPct', 'offsetPct'), ('lifetimeBars', 'orderLife'), ('takeProfitPct', 'takeProfitPct'), ('stopLossPct', 'stopLossPct'),
-    ('minSignalGapBars', 'minSignalGapBars'), ('direction', 'direction'), ('crossMode', 'crossMode'), ('exitMode', 'exitMode'),
-]
-METRIC_COLUMNS = [
-    ('Profit', 'Profit'), ('ProfitFact', 'ProfitFact'), ('Winrate', 'Winrate'), ('Trades', 'Trades'),
-    ('MaxDraw', 'MaxDraw'), ('MaxDrawPct', 'MaxDrawPct'), ('MaxDrawAt', 'MaxDrawAt'),
-    ('WorstTrade', 'WorstTrade'), ('WorstTradeAt', 'WorstTradeAt'), ('WorstOpen', 'WorstOpen'), ('WorstOpenAt', 'WorstOpenAt'),
-    ('positiveMonthShare', 'plusMonthsPct'), ('bestMonthShare', 'bestMonthPct'),
-]
+from ibotd.result import METRIC_COLUMNS, PARAM_COLUMNS
 
 
 def build_workbook(rows, month_keys, colors):

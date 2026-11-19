@@ -131,7 +131,3 @@ def enumerate_grid(axes, constraint):
             cursor -= 1
         if cursor < 0:
             return
-
-
-def series_key(keys, params):
-    return '|'.join(str(params.get(key)) for key in keys)

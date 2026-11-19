@@ -2,13 +2,13 @@ import json
 import time
 import uuid
 
-from ibot.catalog import MA_PARAMS
 from ibot.codec import dumps
 from ibot.db import now_iso
 from ibot.grid import enumerate_grid, grid_summary
-from ibot.ma_cross import PLUGIN
-from ibot.simulate import month_keys_of, simulate
 from ibot.series_file import load_series, slice_series
+from ibotd.accounting import month_keys_of, simulate
+from ibotd.contract import normalize_params
+from ibotd.registry import get_plugin, param_labels
 
 
 def claim_next_run(db):
@@ -36,11 +36,10 @@ def execute_run(db, run_id):
 
 
 def estimate_run(series_id, from_ms, to_ms, strategy_id, axes, settings):
-    if strategy_id != 'ma-cross':
-        raise ValueError('плагин стратегии не найден')
+    plugin = get_plugin(strategy_id)
     summary = grid_summary(
-        {item['key']: item['label'] for item in MA_PARAMS},
-        PLUGIN.constraint,
+        param_labels(plugin),
+        plugin.constraint,
         axes,
         settings['constraintEnabled'],
     )
@@ -49,13 +48,13 @@ def estimate_run(series_id, from_ms, to_ms, strategy_id, axes, settings):
     series = slice_series(load_series(series_id), from_ms, to_ms)
     if not series['close']:
         raise ValueError('в выбранных датах нет свечей')
-    constraint = PLUGIN.constraint if settings['constraintEnabled'] else None
+    constraint = plugin.constraint if settings['constraintEnabled'] else None
     first = next(enumerate_grid(axes, constraint), None)
     if not first:
         raise ValueError('в сетке нет ни одной комбинации')
-    params = {'leverage': settings['leverage'], 'orderNotional': settings['orderNotional'], 'entryOnClose': True, **first}
+    params = normalize_params(plugin, {**first, 'leverage': settings['leverage'], 'orderNotional': settings['orderNotional'], 'entryOnClose': True})
     started = time.perf_counter()
-    simulate(PLUGIN, series, params, settings)
+    simulate(plugin, series, params, settings)
     elapsed_ms = max(1, round((time.perf_counter() - started) * 1000))
     per_minute = 60_000 / elapsed_ms
     return {
@@ -71,8 +70,10 @@ def _execute(db, run_id):
     run = db.execute('SELECT * FROM runs WHERE id = ?', (run_id,)).fetchone()
     if not run:
         return
-    if run['strategy_id'] != 'ma-cross':
-        _fail(db, run_id, 'плагин стратегии не найден')
+    try:
+        plugin = get_plugin(run['strategy_id'])
+    except ValueError as error:
+        _fail(db, run_id, str(error))
         return
     axes = json.loads(run['axes_json'])
     settings = json.loads(run['settings_json'])
@@ -89,7 +90,7 @@ def _execute(db, run_id):
     if not isinstance(stored_keys, list):
         db.execute('UPDATE runs SET month_keys_json = ? WHERE id = ?', (dumps(keys), run_id))
         db.commit()
-    constraint = PLUGIN.constraint if settings.get('constraintEnabled') else None
+    constraint = plugin.constraint if settings.get('constraintEnabled') else None
     cache = {'key': '', 'prepared': None}
     already = run['processed'] or 0
     processed = already
@@ -124,8 +125,8 @@ def _execute(db, run_id):
         if index < already:
             index += 1
             continue
-        params = {'leverage': settings['leverage'], 'orderNotional': settings['orderNotional'], 'entryOnClose': True, **combo}
-        result = simulate(PLUGIN, series, params, settings, cache)
+        params = normalize_params(plugin, {**combo, 'leverage': settings['leverage'], 'orderNotional': settings['orderNotional'], 'entryOnClose': True})
+        result = simulate(plugin, series, params, settings, cache)
         if result['status'] == 'done':
             finished += 1
         else:
