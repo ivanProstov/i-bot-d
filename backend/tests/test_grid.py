@@ -71,9 +71,60 @@ def test_row_filter_applies_profit_and_winrate_and_skips_blanks():
         'maxDrawPct': ['25'],
     })
     assert 'profit >= ?' in where
-    assert 'winrate >= ?' in where
+    assert '(winrate IS NULL OR winrate >= ?)' in where
     assert 'max_draw_pct <= ?' in where
     assert 'profit_fact' not in where
     assert args == ['run-1', 'done', 10.0, 25.0, 30.0]
     blank, _ = row_filter('run-1', {'minWinrate': ['']})
     assert 'winrate' not in blank
+    filled, _ = row_filter('run-1', {'minProfitFact': ['0'], 'minWinrate': ['0'], 'maxWinrate': ['50']})
+    assert '(profit_fact IS NULL OR profit_fact >= ?)' in filled
+    assert '(winrate IS NULL OR winrate >= ?)' in filled
+    assert 'winrate <= ?' in filled
+    assert 'winrate IS NULL OR winrate <=' not in filled
+
+
+def test_zero_minimum_keeps_empty_profit_fact_and_winrate(tmp_path, monkeypatch):
+    import ibot.db as database
+    from ibot.db import connect
+    from ibot.server import query_rows
+
+    monkeypatch.setattr(database, 'DATA', tmp_path)
+    db = connect()
+    try:
+        db.execute(
+            '''INSERT INTO runs (
+                id, series_id, symbol, interval, from_ms, to_ms, strategy_id,
+                axes_json, settings_json, month_keys_json, status, total, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            ('run', 'series', 'WINUSDT', '5m', 0, 1, 'ma-cross', '[]', '{}', '[]', 'done', 4, '2020-01-01T00:00:00.000Z'),
+        )
+        stored = (
+            ('none', 0, None, None, 0),
+            ('zero', -10, 0, 0, 1),
+            ('winner', 10, None, 100, 1),
+            ('loss', 1, -1, 0, 1),
+        )
+        for ordinal, (row_id, profit, profit_fact, winrate, trades) in enumerate(stored):
+            db.execute(
+                '''INSERT INTO result_rows (
+                    id, run_id, ordinal, status, params_json, profit, profit_fact, winrate, trades, months_json
+                ) VALUES (?, ?, ?, 'done', '{}', ?, ?, ?, ?, '[]')''',
+                (row_id, 'run', ordinal, profit, profit_fact, winrate, trades),
+            )
+        db.commit()
+
+        def ids(query):
+            body = query_rows(db, 'run', query)
+            return body['total'], {row['id'] for row in body['rows']}
+
+        assert ids({'status': ['done'], 'minWinrate': ['0']}) == (4, {'none', 'zero', 'winner', 'loss'})
+        assert ids({'status': ['done'], 'minProfitFact': ['0']}) == (3, {'none', 'zero', 'winner'})
+        assert ids({'status': ['done'], 'minWinrate': ['1']}) == (2, {'none', 'winner'})
+        assert ids({'status': ['done'], 'minTrades': ['1']}) == (3, {'zero', 'winner', 'loss'})
+        winner = next(row for row in query_rows(db, 'run', {'status': ['done'], 'ids': ['winner']})['rows'])
+        assert winner['Profit'] == 10
+        assert winner['Winrate'] == 100
+        assert winner['ProfitFact'] is None
+    finally:
+        db.close()
