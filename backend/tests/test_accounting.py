@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ibotd.accounting import simulate
+from ibotd.accounting import month_keys_of, simulate
 from ibotd.lot import floor_to_step
 from ibotd.plugins.ma_cross import MaCross
 
@@ -117,6 +117,25 @@ def test_cancel_entry_and_flip_use_plugin_actions():
     assert result['trades'] == 1
     assert result['profit'] == pytest.approx(100)
     assert result['profitFact'] is None
+
+
+def test_take_month_follows_bar_close_not_open():
+    five = 5 * 60 * 1000
+    opened = int(datetime(2020, 1, 31, 23, 50, tzinfo=timezone.utc).timestamp() * 1000)
+    take_open = opened + five
+    assert datetime.fromtimestamp((take_open + five) / 1000, timezone.utc) == datetime(2020, 2, 1, tzinfo=timezone.utc)
+    entry = {'type': 'limit_entry', 'side': 'long', 'price': 100, 'lifetimeBars': 1, 'stopPrice': 1, 'takePrice': 110}
+    series = candles([
+        (opened, 100, 100, 100),
+        (take_open, 100, 110, 100),
+    ])
+    result = simulate(Scripted({0: entry}), series, {}, settings(earlyStopPct=90))
+    assert month_keys_of(series['openTime']) == ['2020-01', '2020-02']
+    assert result['trades'] == 1
+    assert result['profit'] == pytest.approx(100)
+    by_month = {item['month']: item['profit'] for item in result['months']}
+    assert by_month['2020-01'] == 0
+    assert by_month['2020-02'] == pytest.approx(100)
 
 
 def test_ma_cross_run_takes_profit_without_naming_the_strategy_inside_accounting():

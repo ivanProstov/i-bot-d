@@ -51,7 +51,7 @@ export function HandoffScreen() {
       {drafts.length === 0 ? <p className="note">Черновиков нет.</p> : null}
       {drafts.map((draft) => (
         <article key={draft.id} className="card">
-          <p>{draft.config.symbol} {draft.config.interval} · {draft.config.strategyId} · {draft.status}</p>
+          <p>{draft.config.symbol} {draft.config.interval} · {draft.config.strategyId} · {draft.config.market} · {draft.status}</p>
           <p>
             Profit {num(draft.metrics.Profit)}, ProfitFact {num(draft.metrics.ProfitFact)}, Winrate {num(draft.metrics.Winrate)},
             сделок {draft.metrics.Trades}, MaxDraw {num(draft.metrics.MaxDraw)}.
@@ -65,6 +65,7 @@ export function HandoffScreen() {
             offset {String(draft.config.params.offsetPct)}, lifetime {String(draft.config.params.lifetimeBars)},
             take {String(draft.config.params.takeProfitPct)}, stop {String(draft.config.params.stopLossPct)},
             {String(draft.config.params.direction)}, {String(draft.config.params.crossMode)}, {String(draft.config.params.exitMode)}.
+            entryOnClose: {String(draft.config.params.entryOnClose)}.
           </p>
         </article>
       ))}
