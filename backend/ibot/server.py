@@ -635,6 +635,8 @@ def create_book(db, body):
         row = db.execute('SELECT * FROM result_rows WHERE id = ? AND run_id = ?', (row_id, run_id)).fetchone()
         if not row:
             raise ValueError('строка прогона не найдена')
+        if row['status'] != 'done':
+            raise ValueError('в сводную берётся только досчитанная строка')
         rows.append(public_row(row, run))
     book_id = str(uuid.uuid4())
     db.execute(
