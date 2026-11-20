@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { DataScreen } from './screens/Data';
 import { GridScreen } from './screens/Grid';
 import { HandoffScreen } from './screens/Handoff';
@@ -20,6 +20,7 @@ const links = [
 ];
 
 export function App() {
+  const location = useLocation();
   return (
     <div className="app">
       <aside>
@@ -34,17 +35,19 @@ export function App() {
         </nav>
       </aside>
       <main>
-        <Routes>
-          <Route path="/" element={<Navigate to="/idea" replace />} />
-          <Route path="/idea" element={<IdeaScreen />} />
-          <Route path="/data" element={<DataScreen />} />
-          <Route path="/grid" element={<GridScreen />} />
-          <Route path="/run" element={<RunScreen />} />
-          <Route path="/table" element={<TableScreen />} />
-          <Route path="/refine" element={<RefineScreen />} />
-          <Route path="/plan" element={<PlanScreen />} />
-          <Route path="/handoff" element={<HandoffScreen />} />
-        </Routes>
+        <div key={location.pathname} className="screen">
+          <Routes location={location}>
+            <Route path="/" element={<Navigate to="/idea" replace />} />
+            <Route path="/idea" element={<IdeaScreen />} />
+            <Route path="/data" element={<DataScreen />} />
+            <Route path="/grid" element={<GridScreen />} />
+            <Route path="/run" element={<RunScreen />} />
+            <Route path="/table" element={<TableScreen />} />
+            <Route path="/refine" element={<RefineScreen />} />
+            <Route path="/plan" element={<PlanScreen />} />
+            <Route path="/handoff" element={<HandoffScreen />} />
+          </Routes>
+        </div>
       </main>
     </div>
   );
