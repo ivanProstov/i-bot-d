@@ -83,6 +83,7 @@ export function PlanScreen() {
           orderNotional: Number(draft.orderNotional),
           leverage: Number(draft.leverage),
           constraintEnabled: draft.constraintEnabled,
+          ...(draft.workers != null && draft.workers.trim() !== '' ? { workers: Number(draft.workers) } : {}),
         }),
       });
       saveWorkspace({ runId: run.id });

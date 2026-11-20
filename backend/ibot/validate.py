@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 
 from ibot.grid import grid_summary
+from ibot.parallel import field_worker_max
 from ibotd.registry import get_plugin, grid_params, param_labels
 
 
@@ -37,6 +38,7 @@ def parse_run_input(body, lot_step, min_qty):
     if not leverage >= 1:
         raise ValueError('плечо должно быть не меньше 1')
     enabled = body.get('constraintEnabled') is not False
+    workers = _optional_workers(body.get('workers') if isinstance(body, dict) else None)
     summary = grid_summary(param_labels(plugin), plugin.constraint, axes, enabled)
     if summary['overflow'] or summary['total'] is None:
         raise ValueError('комбинаций слишком много, сузьте сетку')
@@ -52,11 +54,12 @@ def parse_run_input(body, lot_step, min_qty):
         'constraintEnabled': enabled,
         'lotStep': lot_step,
         'minQty': min_qty,
+        'workers': workers,
     }
 
 
 def to_settings(parsed):
-    return {
+    settings = {
         'deposit': parsed['deposit'],
         'earlyStopPct': parsed['earlyStopPct'],
         'orderNotional': parsed['orderNotional'],
@@ -66,6 +69,9 @@ def to_settings(parsed):
         'lotStep': parsed['lotStep'],
         'minQty': parsed['minQty'],
     }
+    if parsed.get('workers') is not None:
+        settings['workers'] = parsed['workers']
+    return settings
 
 
 def summary_for(body):
@@ -118,6 +124,29 @@ def _parse_axes(plugin, value):
 def _order_axes(series_params, axes):
     series = set(series_params)
     return [axis for axis in axes if axis['key'] in series] + [axis for axis in axes if axis['key'] not in series]
+
+
+def _optional_workers(value):
+    if value is None or value == '':
+        return None
+    if isinstance(value, bool):
+        raise ValueError('потоки: нужно целое число от 1')
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError('потоки: нужно целое число от 1')
+        parsed = int(value)
+    elif isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise ValueError('потоки: нужно целое число от 1')
+    if parsed < 1:
+        raise ValueError('потоки: нужно целое число от 1')
+    limit = field_worker_max()
+    if parsed > limit:
+        raise ValueError(f'потоки: не больше {limit}')
+    return parsed
 
 
 def _required_number(value, label):

@@ -6,7 +6,7 @@ import ibot.db as database
 from ibot.codec import dumps
 from ibot.db import now_iso
 from ibot.grid import enumerate_grid, grid_summary
-from ibot.parallel import DB_BATCH, PROGRESS_SECONDS, iter_jobs, job_size, run_pool, worker_count
+from ibot.parallel import DB_BATCH, PROGRESS_SECONDS, cap_explicit_workers, iter_jobs, job_size, run_pool, worker_count
 from ibot.series_file import load_series, slice_series
 from ibotd.accounting import month_keys_of, simulate
 from ibotd.contract import normalize_params
@@ -67,7 +67,8 @@ def estimate_run(series_id, from_ms, to_ms, strategy_id, axes, settings):
     started = time.perf_counter()
     simulate(plugin, series, params, settings)
     elapsed_ms = max(1, round((time.perf_counter() - started) * 1000))
-    workers = worker_count()
+    requested = settings.get('workers') if isinstance(settings, dict) else None
+    workers = worker_count() if requested is None or requested == '' else worker_count(requested)
     # Одна комбинация измерена в одном процессе. Оценка полного перебора — как у очереди.
     per_minute = (60_000 / elapsed_ms) * workers
     return {
@@ -187,9 +188,11 @@ def _execute_parallel(db, run, run_id, axes, constraint, settings, workers):
     status = db.execute('SELECT status FROM runs WHERE id = ?', (run_id,)).fetchone()
     initial_cancel = bool(status and status['status'] == 'cancelled')
     remaining = max(0, (run['total'] or 0) - already)
-    count = worker_count() if workers is None else int(workers)
-    if count < 1:
-        raise ValueError('число процессов меньше 1')
+    if workers is None:
+        requested = settings.get('workers') if isinstance(settings, dict) else None
+        count = worker_count() if requested is None or requested == '' else worker_count(requested)
+    else:
+        count = cap_explicit_workers(workers)
     if initial_cancel:
         count = 1
         size = DB_BATCH

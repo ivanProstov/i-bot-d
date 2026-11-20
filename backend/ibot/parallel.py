@@ -6,6 +6,8 @@
 последней четвёрке. Родитель пишет строки сам и в порядке номеров сетки.
 """
 
+import logging
+import math
 import multiprocessing
 import os
 import queue
@@ -21,6 +23,7 @@ from ibotd.averages import moving_average
 DB_BATCH = 400
 # Как часто процесс отдаёт уже посчитанные строки, чтобы скорость на экране не стояла.
 PROGRESS_SECONDS = 1.0
+_log = logging.getLogger('ibot.parallel')
 
 
 def available_cores():
@@ -35,9 +38,79 @@ def available_cores():
     return os.cpu_count() or 1
 
 
-def worker_count():
-    """Сколько процессов считают сетку. Одно ядро остаётся интерфейсу и серверу."""
+def default_worker_count():
+    """Половина доступных ядер. На одном ядре остаётся один процесс."""
+    return max(1, available_cores() // 2)
+
+
+def field_worker_max():
+    """Верх поля «Потоки»: одно ядро остаётся системе. На одном ядре верх равен 1."""
     return max(1, available_cores() - 1)
+
+
+def _positive_int(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 1 else None
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer() and value >= 1:
+            return int(value)
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            parsed = int(text)
+            return parsed if parsed >= 1 else None
+    return None
+
+
+def worker_count(requested=None):
+    """Сколько процессов считают сетку.
+
+    Число прогона, если оно задано целым от 1, важнее переменной IBOT_WORKERS
+    и обрезается до поля: ядра минус одно. Переменная обрезается до числа ядер.
+    Пустая переменная — это не число. Кривое значение даёт половину ядер и одну строку в журнал.
+    """
+    chosen = _positive_int(requested)
+    if chosen is not None:
+        return min(chosen, field_worker_max())
+    return _count_from_env()
+
+
+def cap_explicit_workers(count):
+    """Явный аргумент прогона: не ниже 1 и не выше числа ядер."""
+    count = int(count)
+    if count < 1:
+        raise ValueError('число процессов меньше 1')
+    return min(count, available_cores())
+
+
+def _count_from_env():
+    raw = os.environ.get('IBOT_WORKERS')
+    if raw is None or raw.strip() == '':
+        return default_worker_count()
+    chosen = _positive_int(raw)
+    if chosen is None:
+        shown = ' '.join(raw.split())
+        _log.warning('IBOT_WORKERS=%s не целое число от 1, беру половину ядер', shown)
+        return default_worker_count()
+    return min(chosen, available_cores())
+
+
+def lower_priority():
+    """Снижает приоритет процесса счёта, чтобы ноутбук оставался отзывчивым.
+
+    Вызов внутри уже запущенного процесса: и на Linux, и на macOS это os.nice.
+    Нет вызова или система отказала — прогон не останавливается.
+    """
+    nice = getattr(os, 'nice', None)
+    if not callable(nice):
+        return
+    try:
+        nice(10)
+    except (OSError, AttributeError):
+        return
 
 
 def job_size(remaining, workers):
@@ -144,6 +217,7 @@ def _pack_result(ordinal, params, result):
 def chunk_worker(spec, jobs, results, cancel_event):
     """Считает пачки одного процесса. Ряд и кэш средних живут до выхода процесса."""
     try:
+        lower_priority()
         from ibotd.accounting import simulate
         from ibotd.contract import normalize_params
         from ibotd.registry import get_plugin
@@ -200,7 +274,7 @@ def run_pool(spec, jobs, worker_n, on_rows, on_tick, should_cancel):
 
     Порядок сетки собирает вызывающий. should_cancel и on_tick тоже на этом потоке.
     """
-    worker_n = max(1, int(worker_n))
+    worker_n = max(1, min(int(worker_n), available_cores()))
     ctx = multiprocessing.get_context('spawn')
     job_queue = ctx.Queue(maxsize=worker_n)
     result_queue = ctx.Queue()

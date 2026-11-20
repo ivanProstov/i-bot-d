@@ -16,6 +16,7 @@ from ibot.codec import dumps, ready
 from ibot.db import ROOT, connect, now_iso
 from ibot.download import download_series
 from ibot.engine import estimate_run
+from ibot.parallel import default_worker_count, field_worker_max
 from ibot.export_sheet import build_workbook
 from ibot.grid import grid_summary
 from ibot.series_file import load_series, slice_series
@@ -86,7 +87,11 @@ class Handler(BaseHTTPRequestHandler):
         method = self.command
         query = parse_qs(parsed.query)
         if method == 'GET' and path == '/api/health':
-            return self._json(200, {'ok': True})
+            return self._json(200, {
+                'ok': True,
+                'workers': default_worker_count(),
+                'workersMax': field_worker_max(),
+            })
         if method == 'GET' and path == '/api/catalog':
             return self._json(200, {'catalog': CATALOG, 'plugins': public_plugins(), 'intervals': USD_M_INTERVALS})
         if method == 'GET' and path == '/api/preset/ma-cross':
