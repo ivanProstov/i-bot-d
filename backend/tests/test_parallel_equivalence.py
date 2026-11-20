@@ -4,6 +4,7 @@
 """
 
 import json
+import logging
 import math
 import uuid
 from datetime import datetime, timezone
@@ -12,9 +13,19 @@ import pytest
 
 from ibot.db import connect, now_iso
 from ibot.engine import claim_next_run, estimate_run, execute_run, resume_interrupted
-from ibot.parallel import DB_BATCH, MaCache, available_cores, job_size, worker_count
+from ibot.parallel import (
+    DB_BATCH,
+    MaCache,
+    available_cores,
+    default_worker_count,
+    field_worker_max,
+    job_size,
+    lower_priority,
+    worker_count,
+)
 from ibot.series_file import save_series
 from ibot.server import create_run
+from ibot.validate import parse_run_input, to_settings
 from ibotd.averages import moving_average
 
 BARS = 20_000
@@ -141,12 +152,129 @@ def test_ma_cache_keeps_every_pair_not_only_the_last():
     assert ema == moving_average('EMA', close, volume, 8)
 
 
-def test_worker_count_leaves_one_core(monkeypatch):
+def test_worker_count_resolution(monkeypatch, caplog):
     monkeypatch.setattr('ibot.parallel.available_cores', lambda: 8)
-    assert worker_count() == 7
+    monkeypatch.delenv('IBOT_WORKERS', raising=False)
+    assert default_worker_count() == 4
+    assert field_worker_max() == 7
+    assert worker_count() == 4
+
+    monkeypatch.setenv('IBOT_WORKERS', '3')
+    assert worker_count() == 3
+    assert worker_count(None) == 3
+    assert worker_count('') == 3
+    assert worker_count(2) == 2
+    assert worker_count('6') == 6
+    assert worker_count(7) == 7
+    assert worker_count(8) == 7
+    assert worker_count(100) == 7
+
+    monkeypatch.setenv('IBOT_WORKERS', '100')
+    assert worker_count() == 8
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger='ibot.parallel'):
+        monkeypatch.setenv('IBOT_WORKERS', '0')
+        assert worker_count() == 4
+        monkeypatch.setenv('IBOT_WORKERS', 'нет')
+        assert worker_count() == 4
+        monkeypatch.setenv('IBOT_WORKERS', '-2')
+        assert worker_count() == 4
+        monkeypatch.setenv('IBOT_WORKERS', '2.5')
+        assert worker_count() == 4
+        assert worker_count(5) == 5
+    messages = [record.message for record in caplog.records]
+    assert messages == [
+        'IBOT_WORKERS=0 не целое число от 1, беру половину ядер',
+        'IBOT_WORKERS=нет не целое число от 1, беру половину ядер',
+        'IBOT_WORKERS=-2 не целое число от 1, беру половину ядер',
+        'IBOT_WORKERS=2.5 не целое число от 1, беру половину ядер',
+    ]
+    assert all('\n' not in message for message in messages)
+
+    caplog.clear()
+    monkeypatch.setenv('IBOT_WORKERS', '   ')
+    assert worker_count() == 4
+    assert caplog.records == []
+
     monkeypatch.setattr('ibot.parallel.available_cores', lambda: 1)
+    monkeypatch.delenv('IBOT_WORKERS', raising=False)
     assert worker_count() == 1
+    assert field_worker_max() == 1
+    monkeypatch.setenv('IBOT_WORKERS', '4')
+    assert worker_count() == 1
+    assert worker_count(3) == 1
     assert available_cores() >= 1
+
+
+def test_lower_priority_does_not_stop_the_run(monkeypatch):
+    import ibot.parallel as parallel
+
+    calls = []
+
+    def refuse(amount):
+        calls.append(amount)
+        raise OSError('refused')
+
+    monkeypatch.setattr(parallel.os, 'nice', refuse)
+    lower_priority()
+    assert calls == [10]
+
+    def missing(amount):
+        raise AttributeError('nice')
+
+    monkeypatch.setattr(parallel.os, 'nice', missing)
+    lower_priority()
+
+    class WithoutNice:
+        pass
+
+    monkeypatch.setattr(parallel, 'os', WithoutNice())
+    lower_priority()
+
+
+def _worker_axes():
+    return [
+        {'key': 'fastType', 'kind': 'enum', 'values': ['SMA']},
+        {'key': 'fastPeriod', 'kind': 'number', 'from': 2, 'to': 2, 'step': 1},
+        {'key': 'slowType', 'kind': 'enum', 'values': ['EMA']},
+        {'key': 'slowPeriod', 'kind': 'number', 'from': 4, 'to': 4, 'step': 1},
+        {'key': 'offsetPct', 'kind': 'number', 'from': 0, 'to': 0, 'step': 0.1},
+        {'key': 'lifetimeBars', 'kind': 'number', 'from': 1, 'to': 1, 'step': 1},
+        {'key': 'takeProfitPct', 'kind': 'number', 'from': 1, 'to': 1, 'step': 0.5},
+        {'key': 'stopLossPct', 'kind': 'number', 'from': 1, 'to': 1, 'step': 1},
+        {'key': 'minSignalGapBars', 'kind': 'number', 'from': 0, 'to': 0, 'step': 1},
+        {'key': 'direction', 'kind': 'enum', 'values': ['long']},
+        {'key': 'crossMode', 'kind': 'enum', 'values': ['direct']},
+        {'key': 'exitMode', 'kind': 'enum', 'values': ['tp_sl']},
+    ]
+
+
+def test_run_field_workers_are_stored_and_capped(monkeypatch):
+    monkeypatch.setattr('ibot.parallel.available_cores', lambda: 8)
+    body = {
+        'strategyId': 'ma-cross',
+        'axes': _worker_axes(),
+        'deposit': 1000,
+        'earlyStopPct': 25,
+        'orderNotional': 1000,
+        'leverage': 1,
+    }
+    omitted = parse_run_input(body, None, None)
+    assert omitted['workers'] is None
+    assert 'workers' not in to_settings(omitted)
+    body['workers'] = 3
+    parsed = parse_run_input(body, None, None)
+    assert parsed['workers'] == 3
+    assert to_settings(parsed)['workers'] == 3
+    body['workers'] = 7
+    assert parse_run_input(body, None, None)['workers'] == 7
+    body['workers'] = 8
+    with pytest.raises(ValueError, match='потоки: не больше 7'):
+        parse_run_input(body, None, None)
+    body['workers'] = 'нет'
+    with pytest.raises(ValueError, match='потоки: нужно целое число от 1'):
+        parse_run_input(body, None, None)
 
 
 def test_job_size_fits_the_write_batch_and_shares_short_grids():
@@ -192,6 +320,93 @@ def test_estimate_scales_per_minute_by_worker_count(tmp_path, monkeypatch):
     assert body['perMinute'] == pytest.approx(single * 3)
     assert body['minutes'] == pytest.approx(body['total'] / body['perMinute'])
     assert body['bars'] == 30
+
+
+def test_estimate_uses_the_effective_worker_count(tmp_path, monkeypatch, caplog):
+    import ibot.db as database
+    import ibot.engine as engine
+
+    monkeypatch.setattr(database, 'DATA', tmp_path)
+    monkeypatch.setattr('ibot.parallel.available_cores', lambda: 8)
+    monkeypatch.setattr(engine, 'simulate', lambda *_args, **_kwargs: None)
+    monkeypatch.delenv('IBOT_WORKERS', raising=False)
+    series = build_series(30)
+    save_series('estimate-workers', series)
+    axes = _worker_axes()
+    settings = {
+        'deposit': 1000,
+        'earlyStopPct': 25,
+        'orderNotional': 1000,
+        'leverage': 1,
+        'constraintEnabled': True,
+    }
+
+    def measure(extra=None):
+        body = estimate_run(
+            'estimate-workers',
+            series['openTime'][0],
+            series['openTime'][-1],
+            'ma-cross',
+            axes,
+            {**settings, **(extra or {})},
+        )
+        single = 60_000 / body['elapsedMs']
+        assert body['perMinute'] == pytest.approx(single * body['workers'])
+        assert body['minutes'] == pytest.approx(body['total'] / body['perMinute'])
+        return body
+
+    assert measure()['workers'] == 4
+    monkeypatch.setenv('IBOT_WORKERS', '6')
+    assert measure()['workers'] == 6
+    monkeypatch.setenv('IBOT_WORKERS', '100')
+    assert measure()['workers'] == 8
+    assert measure({'workers': 2})['workers'] == 2
+    assert measure({'workers': 100})['workers'] == 7
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger='ibot.parallel'):
+        monkeypatch.setenv('IBOT_WORKERS', 'много')
+        assert measure()['workers'] == 4
+    assert len(caplog.records) == 1
+    assert 'IBOT_WORKERS=много' in caplog.records[0].message
+
+
+def test_execute_prefers_the_run_field_over_the_env(tmp_path, monkeypatch):
+    import ibot.db as database
+    import ibot.engine as engine
+
+    monkeypatch.setattr(database, 'DATA', tmp_path)
+    monkeypatch.setattr('ibot.parallel.available_cores', lambda: 8)
+    monkeypatch.setenv('IBOT_WORKERS', '6')
+    seen = []
+
+    def fake_pool(_spec, _jobs, worker_n, _on_rows, _on_tick, _should_cancel):
+        seen.append(worker_n)
+
+    monkeypatch.setattr(engine, 'run_pool', fake_pool)
+    series = build_series(8)
+    series_id = 'workers-field'
+    save_series(series_id, series)
+    db = connect()
+    try:
+        db.execute(
+            '''INSERT INTO series (
+                id, symbol, interval, start_ms, end_ms, bars, gaps_json,
+                min_qty, step_size, tick_size, min_notional, status, progress_bars, updated_at
+            ) VALUES (?, 'BTCUSDT', '5m', ?, ?, ?, '{"count":0,"items":[]}', 0.001, 0.001, 0.1, 5, 'ready', ?, ?)''',
+            (series_id, series['openTime'][0], series['openTime'][-1], len(series['close']), len(series['close']), now_iso()),
+        )
+        db.commit()
+        body = run_body(series_id)
+        body['workers'] = 3
+        pinned = create_run(db, body, None)
+        assert json.loads(pinned['settings_json'])['workers'] == 3
+        execute_run(db, pinned['id'])
+        plain = create_run(db, run_body(series_id), None)
+        execute_run(db, plain['id'])
+        execute_run(db, pinned['id'], workers=2)
+    finally:
+        db.close()
+    assert seen == [3, 6, 2]
 
 
 def test_parallel_matches_single_thread_to_the_cent_and_resume_keeps_rows(tmp_path, monkeypatch):

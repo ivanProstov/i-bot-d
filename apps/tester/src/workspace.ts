@@ -15,6 +15,7 @@ export type GridDraft = {
   orderNotional: string;
   leverage: string;
   constraintEnabled: boolean;
+  workers?: string;
 };
 
 const workspaceKey = 'tester.workspace';

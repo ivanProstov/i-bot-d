@@ -4,7 +4,8 @@ import { loadCatalog, maPlugin, type Axis, type Plugin, type PluginParam, type P
 import { int, minutesText, num } from '../format';
 import { loadGrid, loadWorkspace, saveGrid, saveWorkspace, type GridDraft } from '../workspace';
 
-type Estimate = { total: number; bars: number; elapsedMs: number; perMinute: number | null; minutes: number | null };
+type Estimate = { total: number; bars: number; elapsedMs: number; workers: number; perMinute: number | null; minutes: number | null };
+type WorkerLimits = { workers: number; workersMax: number };
 type Summary = { formula: string; raw: number | null; total: number | null; excluded: number | null; overflow: boolean };
 
 function blankDraft(plugin: Plugin): GridDraft {
@@ -60,7 +61,21 @@ export function GridScreen() {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
+  const [limits, setLimits] = useState<WorkerLimits | null>(null);
   const workspace = loadWorkspace();
+
+  useEffect(() => {
+    void api<WorkerLimits & { ok: boolean }>('/api/health')
+      .then((body) => setLimits({ workers: body.workers, workersMax: body.workersMax }))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!draft || !limits || draft.workers != null) return;
+    const next = { ...draft, workers: String(limits.workers) };
+    setDraft(next);
+    saveGrid(next);
+  }, [draft, limits]);
 
   useEffect(() => {
     void Promise.all([loadCatalog(), api<Preset>('/api/preset/ma-cross')])
@@ -146,6 +161,7 @@ export function GridScreen() {
       orderNotional: Number(current.orderNotional),
       leverage: Number(current.leverage),
       constraintEnabled: current.constraintEnabled,
+      ...(current.workers != null && current.workers.trim() !== '' ? { workers: Number(current.workers) } : {}),
     };
   }
 
@@ -175,7 +191,7 @@ export function GridScreen() {
         Идея: {workspace.ideaId || 'не выбрана'}.
       </p>
       <div className="row">
-        <button className="secondary" onClick={() => update(draftFromPreset(plugin, preset))}>Пресет «MA, как на видео»</button>
+        <button className="secondary" onClick={() => update({ ...draftFromPreset(plugin, preset), workers: draft.workers })}>Пресет «MA, как на видео»</button>
       </div>
       {plugin.params.filter((param) => param.grid).map((param) => (
         <div key={param.key} className="card">
@@ -241,8 +257,23 @@ export function GridScreen() {
           <label>Ранняя остановка, % депозита<input value={draft.earlyStopPct} onChange={(event) => update({ ...draft, earlyStopPct: event.target.value })} /></label>
           <label>Размер заявки, USDT<input value={draft.orderNotional} onChange={(event) => update({ ...draft, orderNotional: event.target.value })} /></label>
           <label>Плечо<input value={draft.leverage} onChange={(event) => update({ ...draft, leverage: event.target.value })} /></label>
+          <label>
+            Потоки
+            <input
+              type="number"
+              min={1}
+              max={limits?.workersMax}
+              step={1}
+              value={draft.workers ?? ''}
+              onChange={(event) => update({ ...draft, workers: event.target.value })}
+            />
+          </label>
         </div>
         <p className="note">Депозит 1000, порог 25% и размер заявки 1000 — примеры из спеки, не зашитый отбор. Плечо в перебор не входит и прибыль в тесте не умножает. Сигнал по закрытию бара включён всегда.</p>
+        <p className="note">
+          «Потоки» — сколько процессов считают этот прогон. По умолчанию половина ядер, верх поля на одно ядро меньше, чем есть у машины.
+          Заполненное поле важнее переменной IBOT_WORKERS. Пустое поле оставляет переменную, а если её нет — ту же половину.
+        </p>
       </div>
       <div className="card">
         {summary.summary ? (
@@ -257,7 +288,7 @@ export function GridScreen() {
         )}
         {estimate ? (
           <p>
-            Одна комбинация на {int(estimate.bars)} барах: {num(estimate.elapsedMs, 0)} мс, {num(estimate.perMinute, 1)} комбинаций в минуту.
+            Одна комбинация на {int(estimate.bars)} барах: {num(estimate.elapsedMs, 0)} мс, {num(estimate.perMinute, 1)} комбинаций в минуту, процессов {int(estimate.workers)}.
             Полный перебор примерно {minutesText(estimate.minutes)}.
           </p>
         ) : (

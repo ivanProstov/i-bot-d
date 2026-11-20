@@ -12,7 +12,7 @@ type Run = {
   strategyId: string;
   ideaId: string | null;
   axes: Axis[];
-  settings: { deposit: number; earlyStopPct: number; orderNotional: number; leverage: number; constraintEnabled: boolean };
+  settings: { deposit: number; earlyStopPct: number; orderNotional: number; leverage: number; constraintEnabled: boolean; workers?: number };
 };
 
 type Field = { from: string; to: string; step: string; margin: string };
@@ -88,6 +88,7 @@ export function RefineScreen() {
           orderNotional: run.settings.orderNotional,
           leverage: run.settings.leverage,
           constraintEnabled: run.settings.constraintEnabled,
+          ...(typeof run.settings.workers === 'number' ? { workers: run.settings.workers } : {}),
         }),
       });
       saveWorkspace({ runId: created.id, selectedRowIds: [] });
