@@ -96,7 +96,7 @@ export function IdeaScreen() {
       <h2>Записанные идеи</h2>
       {ideas.length === 0 ? <p className="note">Пока пусто.</p> : null}
       {ideas.map((idea) => (
-        <button key={idea.id} className="card secondary" onClick={() => edit(idea)}>
+        <button key={idea.id} className={`card secondary${idea.id === currentId ? ' current' : ''}`} onClick={() => edit(idea)}>
           {idea.name} · {idea.strategyId}
           {idea.id === currentId ? ' · текущая' : ''}
         </button>

@@ -189,7 +189,7 @@ export function TableScreen() {
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={row.id} onClick={() => setPicked(row.id)}>
+              <tr key={row.id} className={focus && row.id === focus.id ? 'picked' : undefined} onClick={() => setPicked(row.id)}>
                 <td>
                   <input type="checkbox" checked={selected.includes(row.id)} onChange={() => toggle(row.id)} />
                 </td>

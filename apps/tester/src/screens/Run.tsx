@@ -66,6 +66,11 @@ export function RunScreen() {
             Остаток примерно {run.perMinute ? minutesText(run.remaining / run.perMinute) : '—'}.
           </p>
           <p>Всего в сетке: {int(run.total)}. Пройдено: {int(run.processed)}.</p>
+          <RunProgress
+            processed={run.processed}
+            total={run.total}
+            active={run.status === 'queued' || run.status === 'running'}
+          />
           {run.error ? <p className="error">{run.error}</p> : null}
           {(run.status === 'queued' || run.status === 'running') && (
             <button className="secondary" onClick={() => void cancel(run.id)}>Остановить очередь</button>
@@ -78,7 +83,7 @@ export function RunScreen() {
       {runs.map((item) => (
         <button
           key={item.id}
-          className="card secondary"
+          className={`card secondary${item.id === run?.id ? ' current' : ''}`}
           onClick={() => {
             setCurrent(item.id);
             saveWorkspace({ runId: item.id, selectedRowIds: [] });
@@ -90,6 +95,37 @@ export function RunScreen() {
       ))}
     </section>
   );
+}
+
+function RunProgress({ processed, total, active }: { processed: number; total: number; active: boolean }) {
+  const pct = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
+  const [width, setWidth] = useState(() => (prefersReducedMotion() ? pct : 0));
+
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setWidth(pct);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setWidth(pct));
+    return () => cancelAnimationFrame(frame);
+  }, [pct]);
+
+  return (
+    <div
+      className={active ? 'progress busy' : 'progress'}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={processed}
+      aria-label="Пройдено"
+    >
+      <span style={{ width: `${width}%` }} />
+    </div>
+  );
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 function statusText(status: string): string {
