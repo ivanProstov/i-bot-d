@@ -214,6 +214,54 @@ def _pack_result(ordinal, params, result):
     }
 
 
+def _swallow_queue_error(_error, _obj):
+    """Ошибка слива в трубу при закрытии пула. Прогон из-за неё не останавливается."""
+    return
+
+
+def _arm_queue(pipe_queue):
+    """Труба без читателя не должна держать фоновый поток до конца процесса.
+
+    Флаг читается в момент старта потока очереди, поэтому его ставят
+    до первой записи и до запуска процессов.
+    """
+    pipe_queue._ignore_epipe = True
+    pipe_queue._on_queue_feeder_error = _swallow_queue_error
+
+
+def _release_queue(pipe_queue):
+    """Закрывает очередь и не ждёт бесконечного слива буфера в трубу.
+
+    join_thread ждёт поток Queue._feed. После отмены процессы job_queue
+    уже не читают: непрочитанная пачка заполняет трубу, и поток стоит
+    в send_bytes. Тогда воркер не возвращается к следующему прогону.
+    """
+    try:
+        pipe_queue.cancel_join_thread()
+    except Exception:
+        pass
+    try:
+        pipe_queue.close()
+    except Exception:
+        pass
+    thread = getattr(pipe_queue, '_thread', None)
+    if thread is None:
+        return
+    thread.join(timeout=0.5)
+    if not thread.is_alive():
+        return
+    # Читателей уже нет, а в трубе нет места. Закрытие концов будит send_bytes.
+    try:
+        pipe_queue._reader.close()
+    except Exception:
+        pass
+    try:
+        pipe_queue._writer.close()
+    except Exception:
+        pass
+    thread.join(timeout=2)
+
+
 def chunk_worker(spec, jobs, results, cancel_event):
     """Считает пачки одного процесса. Ряд и кэш средних живут до выхода процесса."""
     try:
@@ -278,6 +326,8 @@ def run_pool(spec, jobs, worker_n, on_rows, on_tick, should_cancel):
     ctx = multiprocessing.get_context('spawn')
     job_queue = ctx.Queue(maxsize=worker_n)
     result_queue = ctx.Queue()
+    _arm_queue(job_queue)
+    _arm_queue(result_queue)
     cancel_event = ctx.Event()
     procs = []
     for index in range(worker_n):
@@ -309,64 +359,88 @@ def run_pool(spec, jobs, worker_n, on_rows, on_tick, should_cancel):
             for job in jobs:
                 if not put(job, True):
                     break
+            # После отмены процессы сами выходят по событию и очередь больше
+            # не читают. Метку конца в неё не кладём: put встал бы без потребителя.
             for _ in range(worker_n):
+                if cancel_event.is_set() or not any(proc.is_alive() for proc in procs):
+                    break
                 if not put(None, False):
                     break
         except Exception:
-            result_queue.put(('error', traceback.format_exc()))
+            try:
+                result_queue.put(('error', traceback.format_exc()))
+            except Exception:
+                pass
             cancel_event.set()
 
     feeder = threading.Thread(target=feed, name='ibot-feed', daemon=True)
     feeder.start()
     exited = 0
     error = None
+    cancelled = False
+
+    def take(message):
+        nonlocal exited, error
+        if message is None:
+            return
+        kind = message[0]
+        if kind == 'rows':
+            on_rows(message[1])
+        elif kind == 'exit':
+            exited += 1
+        elif kind == 'error':
+            error = message[1]
+            cancel_event.set()
+
     try:
         while exited < worker_n:
             try:
                 message = result_queue.get(timeout=0.4)
             except queue.Empty:
                 message = None
-            if message is not None:
-                kind = message[0]
-                if kind == 'rows':
-                    on_rows(message[1])
-                elif kind == 'exit':
-                    exited += 1
-                elif kind == 'error':
-                    error = message[1]
-                    cancel_event.set()
+            take(message)
             if should_cancel():
                 cancel_event.set()
+                cancelled = True
             on_tick()
             if message is None and not any(proc.is_alive() for proc in procs):
                 while True:
                     try:
-                        message = result_queue.get_nowait()
+                        take(result_queue.get_nowait())
                     except queue.Empty:
                         break
-                    kind = message[0]
-                    if kind == 'rows':
-                        on_rows(message[1])
-                    elif kind == 'exit':
-                        exited += 1
-                    elif kind == 'error':
-                        error = message[1]
+                    except (OSError, EOFError, ValueError):
+                        break
                 break
     finally:
-        if exited < worker_n:
-            cancel_event.set()
-        feeder.join(timeout=5)
-        for proc in procs:
-            proc.join(timeout=30)
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=5)
-        result_queue.close()
-        job_queue.close()
-        result_queue.join_thread()
-        job_queue.join_thread()
-    if error:
+        try:
+            # Отмена могла прийти в тот же заход, где процессы уже вышли.
+            if should_cancel():
+                cancelled = True
+            if exited < worker_n:
+                cancel_event.set()
+            feeder.join(timeout=5)
+            forced = False
+            for proc in procs:
+                proc.join(timeout=30)
+                if proc.is_alive():
+                    forced = True
+                    proc.terminate()
+                    proc.join(timeout=5)
+            feeder.join(timeout=2)
+            if not forced:
+                while True:
+                    try:
+                        take(result_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                    except (OSError, EOFError, ValueError):
+                        break
+        finally:
+            _release_queue(job_queue)
+            _release_queue(result_queue)
+    if error and not cancelled:
         raise RuntimeError(error.strip())
-    if exited < worker_n:
+    if exited < worker_n and not cancelled:
         codes = ', '.join(str(proc.exitcode) for proc in procs)
         raise RuntimeError(f'процесс счёта завершился без ответа ({codes})')
