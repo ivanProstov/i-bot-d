@@ -2,7 +2,8 @@ import json
 import threading
 import time
 
-from ibot.binance import fetch_klines_page, fetch_symbol_rules, interval_ms
+from ibotd.binance import fetch_klines_page, fetch_symbol_rules
+from ibotd.market import interval_ms
 from ibot.db import connect, now_iso
 from ibot.series_file import empty_series, find_gaps, load_series, merge_series, save_series
 

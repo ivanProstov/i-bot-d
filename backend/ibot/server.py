@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from ibot.catalog import CATALOG, MA_HYPOTHESES, MA_PARAMS, PLAN_COLUMNS, USD_M_INTERVALS, apply_hypothesis, is_btc_symbol, plan_cell_meta, public_plugin, video_ma_preset
+from ibot.catalog import PLAN_COLUMNS, plan_cell_meta, video_ma_preset
 from ibot.codec import dumps, ready
 from ibot.db import ROOT, connect, now_iso
 from ibot.download import download_series
@@ -19,7 +19,12 @@ from ibot.engine import estimate_run
 from ibot.export_sheet import build_workbook
 from ibot.grid import grid_summary
 from ibot.series_file import load_series, slice_series
-from ibot.validate import parse_day_end, parse_day_start, parse_run_input, require_interval, require_symbol, summary_for, to_settings
+from ibot.validate import parse_day_end, parse_day_start, parse_run_input, summary_for, to_settings
+from ibotd.contract import build_bot_config, metrics_snapshot
+from ibotd.hypothesis import apply_hypothesis, find_hypothesis, hypotheses_for, is_btc_symbol
+from ibotd.market import USD_M_INTERVALS, require_interval, require_symbol
+from ibotd.registry import CATALOG, get_plugin, param_labels, public_plugins
+from ibotd.result import STORAGE_TO_PUBLIC, public_result
 
 PORT = int(os.environ.get('TESTER_PORT') or 8787)
 WEB_ROOT = ROOT / 'apps' / 'tester' / 'dist'
@@ -83,11 +88,11 @@ class Handler(BaseHTTPRequestHandler):
         if method == 'GET' and path == '/api/health':
             return self._json(200, {'ok': True})
         if method == 'GET' and path == '/api/catalog':
-            return self._json(200, {'catalog': CATALOG, 'plugins': [public_plugin()], 'intervals': USD_M_INTERVALS})
+            return self._json(200, {'catalog': CATALOG, 'plugins': public_plugins(), 'intervals': USD_M_INTERVALS})
         if method == 'GET' and path == '/api/preset/ma-cross':
             return self._json(200, video_ma_preset())
         if method == 'GET' and path == '/api/hypotheses':
-            return self._json(200, {'hypotheses': MA_HYPOTHESES})
+            return self._json(200, {'hypotheses': hypotheses_for('ma-cross')})
         if method == 'GET' and path == '/api/plan-columns':
             return self._json(200, {'columns': PLAN_COLUMNS})
         if method == 'POST' and path == '/api/grid/summary':
@@ -239,8 +244,10 @@ def save_idea(db, body, idea_id):
         raise ValueError('нужно имя идеи')
     if not rule_text:
         raise ValueError('нужен текст правила своими словами')
-    if strategy_id != public_plugin()['id']:
-        raise ValueError('плагин стратегии не зарегистрирован')
+    try:
+        get_plugin(strategy_id)
+    except ValueError:
+        raise ValueError('плагин стратегии не зарегистрирован') from None
     stamp = now_iso()
     if not idea_id:
         idea_id = str(uuid.uuid4())
@@ -341,9 +348,10 @@ def run_estimate(db, body):
 def create_run(db, body, hypothesis_id):
     series = ready_series(db, body.get('seriesId'))
     parsed = parse_run_input(body, number_or_none(series['step_size']), number_or_none(series['min_qty']))
+    plugin = get_plugin(parsed['strategyId'])
     summary = grid_summary(
-        {item['key']: item['label'] for item in MA_PARAMS},
-        public_plugin()['constraint'],
+        param_labels(plugin),
+        plugin.constraint,
         parsed['axes'],
         parsed['constraintEnabled'],
     )
@@ -479,26 +487,8 @@ def _push(where, args, column, value, op):
 def public_row(row, run):
     keys = json.loads(run['month_keys_json'] or '[]')
     values = json.loads(row['months_json'] or '[]')
-    return {
-        'id': row['id'],
-        'status': row['status'],
-        'reason': row['reason'],
-        'params': json.loads(row['params_json']),
-        'Profit': row['profit'],
-        'ProfitFact': row['profit_fact'],
-        'Winrate': row['winrate'],
-        'Trades': row['trades'],
-        'MaxDraw': row['max_draw'],
-        'MaxDrawPct': row['max_draw_pct'],
-        'MaxDrawAt': row['max_draw_at'],
-        'WorstTrade': row['worst_trade'],
-        'WorstTradeAt': row['worst_trade_at'],
-        'WorstOpen': row['worst_open'],
-        'WorstOpenAt': row['worst_open_at'],
-        'positiveMonthShare': row['positive_month_share'],
-        'bestMonthShare': row['best_month_share'],
-        'months': [{'month': month, 'profit': values[index] if index < len(values) else None} for index, month in enumerate(keys)],
-    }
+    stored = {storage: row[storage] for storage, _public in STORAGE_TO_PUBLIC}
+    return public_result(row['id'], row['status'], row['reason'], json.loads(row['params_json']), stored, keys, values)
 
 
 def apply_cutoff(db, run_id, body):
@@ -585,26 +575,25 @@ def create_drafts(db, body):
             raise ValueError('строка прогона не найдена')
         if row['status'] != 'done':
             raise ValueError('в черновик берётся только досчитанная строка')
-        config = {
-            'strategyId': run['strategy_id'],
-            'params': json.loads(row['params_json']),
-            'runId': run_id,
-            'symbol': run['symbol'],
-            'market': 'binance-usd-m',
-            'interval': run['interval'],
-            'lotStep': number_or_none(settings.get('lotStep')),
-        }
-        metrics = {
-            'Profit': number_or_none(row['profit']),
-            'ProfitFact': number_or_none(row['profit_fact']),
-            'Winrate': number_or_none(row['winrate']),
-            'Trades': row['trades'] or 0,
-            'MaxDraw': number_or_none(row['max_draw']),
-            'historyFrom': iso_ms(run['from_ms'])[:10],
-            'historyTo': iso_ms(run['to_ms'])[:10],
-            'earlyStopPct': settings.get('earlyStopPct'),
-            'runId': run_id,
-        }
+        config = build_bot_config(
+            strategy_id=run['strategy_id'],
+            params=json.loads(row['params_json']),
+            run_id=run_id,
+            symbol=run['symbol'],
+            interval=run['interval'],
+            lot_step=number_or_none(settings.get('lotStep')),
+        )
+        metrics = metrics_snapshot(
+            profit=number_or_none(row['profit']),
+            profit_fact=number_or_none(row['profit_fact']),
+            winrate=number_or_none(row['winrate']),
+            trades=row['trades'] or 0,
+            max_draw=number_or_none(row['max_draw']),
+            history_from=iso_ms(run['from_ms'])[:10],
+            history_to=iso_ms(run['to_ms'])[:10],
+            early_stop_pct=settings.get('earlyStopPct'),
+            run_id=run_id,
+        )
         draft_id = str(uuid.uuid4())
         db.execute(
             'INSERT INTO drafts (id, run_id, row_id, config_json, metrics_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -711,20 +700,21 @@ def write_plan(db, body):
 
 def queue_hypothesis(db, body):
     hypothesis_id = body.get('hypothesisId') if isinstance(body.get('hypothesisId'), str) else ''
-    hypothesis = next((item for item in MA_HYPOTHESES if item['id'] == hypothesis_id), None)
+    hypothesis = find_hypothesis(hypothesis_id)
     if not hypothesis:
         raise ValueError('такой гипотезы нет в списке')
     series = ready_series(db, body.get('seriesId'))
     if hypothesis['rejectBtc'] and is_btc_symbol(series['symbol']):
         raise ValueError('эта гипотеза не ставится на символ, который начинается с BTC')
     strategy_id = body.get('strategyId') if isinstance(body.get('strategyId'), str) else ''
-    if strategy_id != public_plugin()['id']:
+    if strategy_id != hypothesis['strategyId']:
         raise ValueError('плагин стратегии не зарегистрирован')
+    get_plugin(strategy_id)
     if not isinstance(body.get('axes'), list):
         raise ValueError('нет сетки')
     queued = dict(body)
     queued['axes'] = apply_hypothesis(body['axes'], hypothesis)
-    queued['strategyId'] = public_plugin()['id']
+    queued['strategyId'] = hypothesis['strategyId']
     return run_json(create_run(db, queued, hypothesis['id']))
 
 

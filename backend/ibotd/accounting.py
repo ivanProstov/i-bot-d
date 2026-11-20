@@ -1,17 +1,27 @@
+"""Счёт одной комбинации: сделки, просадка, помесячная прибыль.
+
+Плагин приходит снаружи. Здесь нет ветки по имени стратегии.
+"""
+
 import math
 from datetime import datetime, timezone
 
-from ibot.grid import series_key
+from ibotd.lot import floor_to_step
 
 
 def month_keys_of(open_time):
-    return _month_span(open_time)
+    return _month_span(open_time, _bar_ms(open_time))
+
+
+def series_key(keys, params):
+    return '|'.join(str(params.get(key)) for key in keys)
 
 
 def simulate(plugin, series, params, settings, cache=None):
     close = series['close']
     n = len(close)
-    month_keys = _month_span(series['openTime'])
+    bar_ms = _bar_ms(series['openTime'])
+    month_keys = _month_span(series['openTime'], bar_ms)
     month_index = {month: index for index, month in enumerate(month_keys)}
     month_profit = [0.0 for _ in month_keys]
     month_known = [True for _ in month_keys]
@@ -54,7 +64,8 @@ def simulate(plugin, series, params, settings, cache=None):
         if worst_trade is None or pnl < worst_trade:
             worst_trade = pnl
             worst_trade_at = _day(open_time)
-        month = _day(open_time)[:7]
+        # Месяц сделки — по закрытию бара, не по openTime. Бар 5m 23:55 закрывается в 00:00.
+        month = _day(open_time + bar_ms)[:7]
         index = month_index.get(month)
         if index is not None:
             month_profit[index] += pnl
@@ -171,7 +182,7 @@ def simulate(plugin, series, params, settings, cache=None):
 def _open_position(side, price, stop, take, protect_from, settings):
     if not price > 0 or not settings['orderNotional'] > 0:
         return None
-    qty = _round_lot(settings['orderNotional'] / price, settings.get('lotStep'))
+    qty = floor_to_step(settings['orderNotional'] / price, settings.get('lotStep'))
     if not qty > 0:
         return None
     if settings.get('minQty') is not None and qty < settings['minQty']:
@@ -198,24 +209,24 @@ def _mark_adverse(position, index, low, high, close, realized, deposit):
     return {'equityMark': deposit + realized + mark, 'equityWorst': deposit + realized + worst, 'worstUnrealized': worst}
 
 
-def _round_lot(qty, step):
-    if step is None or not step > 0:
-        return qty
-    text = f'{step:.12f}'.rstrip('0').rstrip('.')
-    decimals = 0 if '.' not in text else len(text.split('.')[1])
-    units = math.floor(qty / step + 1e-9)
-    return round(units * step, decimals)
-
-
 def _day(ms):
     return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime('%Y-%m-%d')
 
 
-def _month_span(open_time):
+def _bar_ms(open_time):
+    step = None
+    for index in range(1, len(open_time)):
+        diff = open_time[index] - open_time[index - 1]
+        if diff > 0 and (step is None or diff < step):
+            step = diff
+    return step or 0
+
+
+def _month_span(open_time, bar_ms=0):
     if not len(open_time):
         return []
     start = _day(open_time[0])[:7]
-    end = _day(open_time[len(open_time) - 1])[:7]
+    end = _day(open_time[len(open_time) - 1] + bar_ms)[:7]
     out = [start]
     cursor = start
     while cursor < end:

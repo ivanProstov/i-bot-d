@@ -13,7 +13,9 @@ def moving_average(kind, close, volume, period):
         return _smma(close, period)
     if kind == 'WMA':
         return _wma(close, period)
-    return _vwma(close, volume, period)
+    if kind == 'VWMA':
+        return _vwma(close, volume, period)
+    raise ValueError(f'неизвестный тип средней {kind}')
 
 
 def _empty(length):

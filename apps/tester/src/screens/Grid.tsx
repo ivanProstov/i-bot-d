@@ -153,7 +153,13 @@ export function GridScreen() {
     return (
       <section>
         <h1>Сетка</h1>
-        {error ? <p className="error">{error}</p> : <p className="note">Каталог плагина ещё грузится.</p>}
+        <div className="card">
+          {error ? <p className="error">{error}</p> : <p className="note">Каталог плагина ещё грузится.</p>}
+          <div className="row">
+            <button className="secondary" disabled>Оценить скорость</button>
+            <button disabled>Запустить прогон</button>
+          </div>
+        </div>
       </section>
     );
   }

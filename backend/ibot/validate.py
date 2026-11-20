@@ -2,8 +2,8 @@ import math
 import re
 from datetime import datetime, timezone
 
-from ibot.catalog import INTERVAL_MS, MA_PARAMS, public_plugin
 from ibot.grid import grid_summary
+from ibotd.registry import get_plugin, grid_params, param_labels
 
 
 def parse_day_start(value):
@@ -21,26 +21,9 @@ def _parse_day(value, clock):
     return int(parsed.timestamp() * 1000)
 
 
-def require_interval(value):
-    if value not in INTERVAL_MS:
-        raise ValueError('таймфрейм не из списка USD-M')
-    return value
-
-
-def require_symbol(value):
-    if not isinstance(value, str):
-        raise ValueError('нужен символ')
-    symbol = value.strip().upper()
-    if not re.fullmatch(r'[A-Z0-9]{4,30}', symbol):
-        raise ValueError('символ должен быть кодом Binance, например BTCUSDT')
-    return symbol
-
-
 def parse_run_input(body, lot_step, min_qty):
-    plugin = public_plugin()
-    if body.get('strategyId') != plugin['id']:
-        raise ValueError('в реестре нет такого strategyId')
-    axes = _parse_axes(body.get('axes'))
+    plugin = get_plugin(body.get('strategyId'))
+    axes = _parse_axes(plugin, body.get('axes'))
     deposit = _required_number(body.get('deposit'), 'депозит')
     early = _required_number(body.get('earlyStopPct'), 'порог просадки')
     notional = _required_number(body.get('orderNotional'), 'размер заявки')
@@ -54,14 +37,14 @@ def parse_run_input(body, lot_step, min_qty):
     if not leverage >= 1:
         raise ValueError('плечо должно быть не меньше 1')
     enabled = body.get('constraintEnabled') is not False
-    summary = grid_summary(_labels(), plugin['constraint'], axes, enabled)
+    summary = grid_summary(param_labels(plugin), plugin.constraint, axes, enabled)
     if summary['overflow'] or summary['total'] is None:
         raise ValueError('комбинаций слишком много, сузьте сетку')
     if summary['total'] <= 0:
         raise ValueError('в сетке нет ни одной комбинации')
     return {
-        'strategyId': plugin['id'],
-        'axes': _order_axes(plugin['seriesParams'], axes),
+        'strategyId': plugin.id,
+        'axes': _order_axes(plugin.series_params, axes),
         'deposit': deposit,
         'earlyStopPct': early,
         'orderNotional': notional,
@@ -86,17 +69,15 @@ def to_settings(parsed):
 
 
 def summary_for(body):
-    plugin = public_plugin()
-    if body.get('strategyId') != plugin['id']:
-        raise ValueError('в реестре нет такого strategyId')
-    axes = _parse_axes(body.get('axes'))
-    return grid_summary(_labels(), plugin['constraint'], axes, body.get('constraintEnabled') is not False)
+    plugin = get_plugin(body.get('strategyId'))
+    axes = _parse_axes(plugin, body.get('axes'))
+    return grid_summary(param_labels(plugin), plugin.constraint, axes, body.get('constraintEnabled') is not False)
 
 
-def _parse_axes(value):
+def _parse_axes(plugin, value):
     if not isinstance(value, list) or not value:
         raise ValueError('сетка пустая')
-    defs = {item['key']: item for item in MA_PARAMS if item['grid']}
+    defs = grid_params(plugin)
     seen = set()
     axes = []
     for raw in value:
@@ -137,10 +118,6 @@ def _parse_axes(value):
 def _order_axes(series_params, axes):
     series = set(series_params)
     return [axis for axis in axes if axis['key'] in series] + [axis for axis in axes if axis['key'] not in series]
-
-
-def _labels():
-    return {item['key']: item['label'] for item in MA_PARAMS}
 
 
 def _required_number(value, label):
