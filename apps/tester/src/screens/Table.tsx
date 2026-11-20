@@ -42,7 +42,14 @@ export function TableScreen() {
   const [run, setRun] = useState<RunInfo | null>(null);
   const [picked, setPicked] = useState(workspace.selectedRowIds[0] || '');
   const [selected, setSelected] = useState<string[]>(workspace.selectedRowIds);
-  const [filters, setFilters] = useState({ minProfitFact: '', maxDrawPct: '', minTrades: '', minPositiveMonthShare: '' });
+  const [filters, setFilters] = useState({
+    minProfit: '',
+    minProfitFact: '',
+    maxDrawPct: '',
+    minWinrate: '',
+    minTrades: '',
+    minPositiveMonthShare: '',
+  });
   const [showMonths, setShowMonths] = useState(false);
   const [cutoff, setCutoff] = useState({ metric: 'ProfitFact', op: '>=', value: '' });
   const [book, setBook] = useState({ name: '', kind: 'research', band: 'short' });
@@ -139,14 +146,16 @@ export function TableScreen() {
         <button className={status === 'rejected' ? 'active' : 'secondary'} onClick={() => setStatus('rejected')}>Отброшено</button>
       </div>
       <div className="row">
+        <label>Profit от<input value={filters.minProfit} onChange={(event) => setFilters({ ...filters, minProfit: event.target.value })} /></label>
         <label>ProfitFact от<input value={filters.minProfitFact} onChange={(event) => setFilters({ ...filters, minProfitFact: event.target.value })} /></label>
         <label>MaxDrawPct до<input value={filters.maxDrawPct} onChange={(event) => setFilters({ ...filters, maxDrawPct: event.target.value })} /></label>
+        <label>Winrate от<input value={filters.minWinrate} onChange={(event) => setFilters({ ...filters, minWinrate: event.target.value })} /></label>
         <label>Сделок от<input value={filters.minTrades} onChange={(event) => setFilters({ ...filters, minTrades: event.target.value })} /></label>
         <label>Плюсовых месяцев, % от<input value={filters.minPositiveMonthShare} onChange={(event) => setFilters({ ...filters, minPositiveMonthShare: event.target.value })} /></label>
         <button className="secondary" onClick={() => void reload(0).then(() => setPage(0))}>Фильтр</button>
         <a className="button secondary" href={`/api/runs/${workspace.runId}/export.xlsx?${query}`}>xlsx</a>
       </div>
-      <p className="note">Цвет Profit и ProfitFact — трети внутри досчитанных строк этого прогона, не порог из ролика. Имена правее MaxDraw в спеке не заданы.</p>
+      <p className="note">Цвет Profit и ProfitFact — трети внутри досчитанных строк этого прогона, не порог из ролика. Поля фильтра пустые, пока их не заполнят: порог винрейта 50% сам не встаёт. Имена правее MaxDraw в спеке не заданы.</p>
       <div className="scroll">
         <table>
           <thead>

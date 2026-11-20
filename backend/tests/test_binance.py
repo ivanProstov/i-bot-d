@@ -57,6 +57,13 @@ def test_exchange_errors_retry_only_server_failures():
         fetch_klines_page('BTCUSDT', '1m', 0, 1, opener=lambda url: (200, b'{}'))
 
 
+def test_sources_do_not_require_telegram_testnet_or_orders():
+    files = list(Path('backend/ibot').rglob('*.py')) + list(Path('backend/ibotd').rglob('*.py'))
+    text = '\n'.join(path.read_text() for path in files)
+    for token in ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'testnet.binance', 'demo-fapi', '/fapi/v1/order', 'https://api.binance.com'):
+        assert token not in text
+
+
 def test_module_does_not_invent_trade_paths():
     text = Path('backend/ibotd/binance.py').read_text()
     for token in ('/order', 'listenKey', 'positionRisk', 'positionSide', 'fstream', 'api_key', 'apiKey'):

@@ -81,6 +81,34 @@ def test_stop_wins_when_stop_and_take_share_a_bar_and_profit_fact():
     assert result['winrate'] == pytest.approx(50)
 
 
+def test_early_stop_includes_the_threshold_and_spares_a_smaller_dip():
+    entry = {'type': 'limit_entry', 'side': 'long', 'price': 100, 'lifetimeBars': 1, 'stopPrice': 1, 'takePrice': 1000}
+    exact = candles([
+        (ms(2020, 1, 15), 100, 100, 100),
+        (ms(2020, 1, 16), 80, 100, 75),
+        (ms(2020, 2, 15), 80, 80, 80),
+    ])
+    stopped = simulate(Scripted({0: entry}), exact, {}, settings())
+    assert stopped['status'] == 'stopped'
+    assert stopped['maxDraw'] == pytest.approx(250)
+
+    spared = candles([
+        (ms(2020, 1, 15), 100, 100, 100),
+        (ms(2020, 1, 16), 80, 100, 76),
+        (ms(2020, 2, 15), 80, 80, 80),
+    ])
+    live = simulate(Scripted({0: entry}), spared, {}, settings())
+    assert live['status'] == 'done'
+    assert live['months'][1]['profit'] == 0
+    assert live['maxDraw'] == pytest.approx(240)
+
+    idle = simulate(Scripted({}), candles([(ms(2020, 1, 15), 100, 100, 100)]), {}, settings())
+    assert idle['status'] == 'done'
+    assert idle['trades'] == 0
+    assert idle['winrate'] is None
+    assert idle['profitFact'] is None
+
+
 def test_early_stop_keeps_the_row_and_blanks_later_months():
     entry = {'type': 'limit_entry', 'side': 'long', 'price': 100, 'lifetimeBars': 1, 'stopPrice': 1, 'takePrice': 1000}
     series = candles([

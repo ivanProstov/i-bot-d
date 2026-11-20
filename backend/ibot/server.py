@@ -462,16 +462,16 @@ def row_filter(run_id, query):
         where.append('status = ?')
         args.append(status)
     _push(where, args, 'profit', _first(query, 'minProfit'), '>=')
-    _push(where, args, 'profit_fact', _first(query, 'minProfitFact'), '>=')
+    _push(where, args, 'profit_fact', _first(query, 'minProfitFact'), '>=', keep_null=True)
     _push(where, args, 'max_draw_pct', _first(query, 'maxDrawPct'), '<=')
-    _push(where, args, 'winrate', _first(query, 'minWinrate'), '>=')
+    _push(where, args, 'winrate', _first(query, 'minWinrate'), '>=', keep_null=True)
     _push(where, args, 'winrate', _first(query, 'maxWinrate'), '<=')
     _push(where, args, 'trades', _first(query, 'minTrades'), '>=')
     _push(where, args, 'positive_month_share', _first(query, 'minPositiveMonthShare'), '>=')
     return ' AND '.join(where), args
 
 
-def _push(where, args, column, value, op):
+def _push(where, args, column, value, op, keep_null=False):
     if value is None or value == '':
         return
     try:
@@ -480,7 +480,10 @@ def _push(where, args, column, value, op):
         return
     if parsed != parsed or parsed in (float('inf'), float('-inf')):
         return
-    where.append(f'{column} {op} ?')
+    if keep_null:
+        where.append(f'({column} IS NULL OR {column} {op} ?)')
+    else:
+        where.append(f'{column} {op} ?')
     args.append(parsed)
 
 
@@ -635,6 +638,8 @@ def create_book(db, body):
         row = db.execute('SELECT * FROM result_rows WHERE id = ? AND run_id = ?', (row_id, run_id)).fetchone()
         if not row:
             raise ValueError('строка прогона не найдена')
+        if row['status'] != 'done':
+            raise ValueError('в сводную берётся только досчитанная строка')
         rows.append(public_row(row, run))
     book_id = str(uuid.uuid4())
     db.execute(
